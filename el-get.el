@@ -319,8 +319,10 @@ package names."
       (error "el-get: package `%s' has incomplete recipe (no :type)" package))))
 
 (defun el-get-package-is-installed (package)
-  "Raise an error if PACKAGE is already installed"
-  (string= "installed" (el-get-package-status (el-get-as-string package))))
+  "Return true if PACKAGE is installed"
+  (and (file-directory-p (el-get-package-directory package))
+       (string= "installed"
+                (el-get-read-package-status package))))
 
 (defun el-get-read-package-name (action &optional filtered)
   "Ask user for a package name in minibuffer, with completion.
@@ -429,7 +431,7 @@ which defaults to the first element in `el-get-recipe-path'."
     `(el-get-run-package-support ',form ',fname ',package)))
 
 
-(defun el-get-init (package)
+(defun el-get-init (package &optional package-status-alist)
   "Make the named PACKAGE available for use.
 
 Add PACKAGE's directory (or `:load-path' if specified) to the
@@ -439,7 +441,8 @@ called by `el-get' (usually at startup) for each installed package."
   (interactive (list (el-get-read-package-name "Init")))
   (el-get-verbose-message "el-get-init: %s" package)
   (condition-case err
-      (let* ((source   (el-get-package-def package))
+      (let* ((source
+              (el-get-read-package-status-recipe package package-status-alist))
              (method   (el-get-package-method source))
              (loads    (el-get-as-list (plist-get source :load)))
              (autoloads (plist-get source :autoloads))
@@ -600,7 +603,7 @@ PACKAGE may be either a string or the corresponding symbol."
 (defun el-get-do-install (package)
   "Install any PACKAGE for which you have a recipe."
   (el-get-error-unless-package-p package)
-  (if (string= (el-get-package-status package) "installed")
+  (if (el-get-package-is-installed package)
       (el-get-init package)
     (let* ((status   (el-get-read-package-status package))
 	   (source   (el-get-package-def package))
@@ -810,8 +813,9 @@ Also put the checksum in the kill-ring."
 When PACKAGES is non-nil, only process entries from this list.
 Those packages from the list we don't know the status of are
 considered \"required\"."
-  (let* ((required    (el-get-list-package-names-with-status "required"))
-	 (installed   (el-get-list-package-names-with-status "installed"))
+  (let* ((p-s-alist   (el-get-read-status-file))
+         (required    (el-get-filter-package-alist-with-status p-s-alist "required"))
+         (installed   (el-get-filter-package-alist-with-status p-s-alist "installed"))
 	 (to-init     (if packages
 			  (loop for p in packages
 				when (member (el-get-as-string p) installed)
@@ -876,7 +880,6 @@ already installed packages is considered."
   (let* ((packages
 	  ;; (el-get 'sync 'a 'b my-package-list)
 	  (loop for p in packages when (listp p) append p else collect p))
-	 (p-status    (el-get-read-all-packages-status))
          (total       (length packages))
          (installed   (el-get-count-packages-with-status packages "installed"))
          (progress (and (eq sync 'wait)
