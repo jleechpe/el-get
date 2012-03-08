@@ -565,7 +565,8 @@ PACKAGE may be either a string or the corresponding symbol."
   "Function to call after building the package while installing it."
   (el-get-save-package-status package "installed")
   (el-get-invalidate-autoloads package)	; that will also update them
-  (el-get-init package))
+  (el-get-init package)
+  (run-hook-with-args 'el-get-post-install-hooks package))
 
 (defun el-get-post-install (package)
   "Post install PACKAGE. This will get run by a sentinel."
@@ -597,8 +598,7 @@ PACKAGE may be either a string or the corresponding symbol."
 
     ;; el-get-post-build will care about autoloads and initializing the
     ;; package, and will change the status to "installed"
-    (el-get-build package commands nil sync 'el-get-post-install-build))
-  (run-hook-with-args 'el-get-post-install-hooks package))
+    (el-get-build package commands nil sync 'el-get-post-install-build)))
 
 (defun el-get-do-install (package)
   "Install any PACKAGE for which you have a recipe."
@@ -668,19 +668,33 @@ PACKAGE may be either a string or the corresponding symbol."
                 missing-features)
           (setq features (append missing-features features)))))))
 
-
+(defun el-get-post-update-build (package)
+  "Function to call after building the package while updating it."
+  ;; fix trailing failed installs
+  (when (string= (el-get-read-package-status package) "required")
+    (el-get-save-package-status package "installed"))
+  (el-get-invalidate-autoloads package)
+  (el-get-init package)
+  (el-get-reload package)
+  (run-hook-with-args 'el-get-post-update-hooks package))
+
 (defun el-get-post-update (package)
   "Post update PACKAGE. This will get run by a sentinel."
-  (let* ((source   (el-get-package-def package))
+  (let* ((sync el-get-default-process-sync)
+         (source   (el-get-package-def package))
 	 (commands (el-get-build-commands package)))
-    (el-get-build package commands nil el-get-default-process-sync
-		  (lambda (package)
-		    (el-get-init package)
-		    ;; fix trailing failed installs
-		    (when (string= (el-get-read-package-status package) "required")
-		      (el-get-save-package-status package "installed"))
-                    (el-get-reload package)
-                    (run-hook-with-args 'el-get-post-update-hooks package)))))
+    (el-get-build package commands nil sync 'el-get-post-update-build)))
+
+(defun el-get-update-requires-reinstall (package)
+  "Returns true if updating PACKAGE would require a reinstall.
+
+This happens if the cached recipe and the current one have
+different install methods."
+  (let* ((source   (el-get-package-def package))
+         (old-source (el-get-read-package-status-recipe package))
+	 (method   (el-get-package-method source))
+         (old-method (el-get-package-method old-source)))
+    (not (eq method old-method))))
 
 (defun el-get-update (package)
   "Update PACKAGE."
@@ -692,11 +706,13 @@ PACKAGE may be either a string or the corresponding symbol."
 	 (update   (el-get-method method :update))
 	 (url      (plist-get source :url))
 	 (commands (plist-get source :build)))
-    ;; update the package now
-    (if (plist-get source :checksum)
-	(error "el-get: remove checksum from package %s to update it." package)
-      (funcall update package url 'el-get-post-update)
-      (message "el-get update %s" package))))
+    (if (el-get-update-requires-reinstall package)
+        (el-get-reinstall package)
+      ;; update the package now
+      (if (plist-get source :checksum)
+          (error "el-get: remove checksum from package %s to update it." package)
+        (funcall update package url 'el-get-post-update)
+        (message "el-get update %s" package)))))
 
 ;;;###autoload
 (defun el-get-update-all (&optional no-prompt)
