@@ -4,5 +4,8 @@
        :type github
        :pkgname "magit/magit"
        :info "."
-       :build ("make all")
-       :build/darwin `(,(concat "make EMACS=" el-get-emacs " all")))
+       :autoloads ("50magit")
+       :build (("make" "all"))
+       :build/darwin `(("make"
+                        ,(format "EMACS=%s" el-get-emacs)
+                        "all")))

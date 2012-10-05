@@ -15,22 +15,22 @@
 (require 'el-get-http)
 
 (defun el-get-http-unpack-cleanup-extract-hook (package)
-  "Cleanup after tar xzf: if there's only one subdir, move all
-the files up."
+  "Cleanup after tar xzf: if there's only one subdir, move all the files up."
+
   (let* ((pdir    (el-get-package-directory package))
 	 (url     (plist-get (el-get-package-def package) :url))
 	 (tarfile (el-get-filename-from-url url))
 	 (files   (remove tarfile (directory-files pdir nil "[^.]$")))
 	 (dir     (car files)))
-    ;; if there's only one directory, move its content up and get rid of it
     (el-get-verbose-message "el-get: unpack cleanup %s [%s]: %S" package pdir files)
-    (unless (cdr files)
+    ;; if there's only one directory, move its content up and get rid of it
+    (when (and (not (cdr files))
+               (file-directory-p (expand-file-name dir pdir)))
       (loop for fname in (directory-files
 			  (expand-file-name dir pdir) nil "[^.]$")
 	    for fullname = (expand-file-name fname (expand-file-name dir pdir))
-	    for newname  = (expand-file-name pdir fname)
+	    for newname  = (expand-file-name fname pdir)
 	    do (progn
-		 (el-get-verbose-message "%S %S %S" pdir dir fname)
 		 (el-get-verbose-message "mv %S %S" fullname newname)
 		 (rename-file fullname newname)))
       (el-get-verbose-message "delete-directory: %s" (expand-file-name dir pdir))

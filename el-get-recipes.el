@@ -74,30 +74,44 @@ the first one found is used."
   "Used to track whether org needs to be loaded for user
   init files to finish being initialized.")
 
-(defun el-get-user-package-org-load (package)
+(defun el-get-user-package-org-load (package-init-file)
   "Function for loading user init files stored as .org*"
   (condition-case nil
-      (org-babel-load-file package)
-    (error (eval-after-load 'org-install `(org-babel-load-file ,package))
+      (org-babel-load-file package-init-file)
+    (error (eval-after-load 'ob-tangle `(org-babel-load-file
+                                           ,package-init-file))
            (setq el-get-user-package-org-pending 't))))
 
 (defun el-get-user-package-org-check ()
-  "Check to see if any user init files are waiting on org-install.
+  "Check to see if any user init files are waiting on ob-tangle.
 
 If 'nil then either `org-babel-load-file' is available, or no
 user init files are .org*.  If 't then notify user that
 org is not yet loaded."
   (when el-get-user-package-org-pending
-    ;; Check to see if org-install was required after (eval-after-load
-    ;; 'org-install) was called.
-    (unless (featurep 'org-install)
+    ;; Check to see if ob-tangle or org were required after
+    ;; (eval-after-load 'ob-tangle) was called.  Org will load
+    ;; ob-tangle as well.
+    (unless (featurep 'ob-tangle)
       (el-get-notify "Loading of user init files incomplete"
-                     "Add Org-Mode to path and run
-`(require 'org-install)' to complete initialization."))))
+                     "Add Org-Mode to path and run `(require 'org)' to complete initialization."))))
 
-(defun el-get-user-package-el-load (package)
-  "Function for loading user init files stored as .el*"
-  (load-file package))
+(defun el-get-user-package-el-load (package-init-file)
+  "Function for loading user init files stored as .el*.
+
+This also respects the settings for `el-get-byte-compile'."
+  (if el-get-byte-compile
+      ;; Determine what the compiled filename will be.  Since the
+      ;; package could have multiple extensions due to archiving and
+      ;; encrypting you cannot simply remove the last extension.
+      (let ((compile-name (byte-compile-dest-file package-init-file)))
+        (el-get-byte-compile package-init-file)
+        ;; Load the compiled file.  This ensures you do not
+        ;; accidentally load a non .el/.elc file if there is such
+        ;; present in the directory.
+        (load-file compile-name))
+    ;; Otherwise load the uncompiled file.
+    (load-file package-init-file)))
 
 (defun el-get-load-package-user-init-file (package)
   "Load the user init file for PACKAGE, called init-package.el
@@ -110,7 +124,9 @@ times and load it.  If the file is a traditional elisp file it
 will load it directly."
   (when el-get-user-package-directory
     ;; Match the package against the extension to determine which
-    ;; command to use when loading it.
+    ;; command to use when loading it.  This returns the first
+    ;; matching filename+extension to be loaded, as well as the method
+    ;; to load it (org or elisp).
     (flet ((package-load (base ext-type command)
              (catch 'exists
                (loop for ext in ext-type do
@@ -119,16 +135,19 @@ will load it directly."
                            (throw 'exists `(,command ,filename)))))
                nil)))
       (let* ((package-name (format "init-%s" package))
-             (base (expand-file-name package-name el-get-user-package-directory))
-             (org-type-load 'el-get-user-package-org-load)
-             (el-type-load 'el-get-user-package-el-load)
+             (base (expand-file-name package-name
+                                     el-get-user-package-directory))
              ;; By preferring .org files over .el files you ensure
              ;; that changes to the .org files will be taken into
              ;; account and a new .el file will be tangled to reflect
              ;; those changes.
              (load-method (or
-                           (package-load base el-get-user-package-org-type org-type-load)
-                           (package-load base el-get-user-package-el-type el-type-load))))
+                           (package-load base
+                                         el-get-user-package-org-type
+                                         'el-get-user-package-org-load)
+                           (package-load base
+                                         el-get-user-package-el-type
+                                         'el-get-user-package-el-load))))
         ;; Perform load evalation here
         (if load-method
             (progn
@@ -288,5 +307,21 @@ Second argument PACKAGE is optional and only used to construct the error message
     (when (version-list-< (version-to-list emacs-version) required-version-list)
       (error "Package %s requires Emacs version %s or higher, but the current emacs is only version %s"
              pname required-version emacs-version))))
+
+(defun el-get-envpath-prepend (envname head)
+  "Prepend HEAD in colon-separated environment variable ENVNAME.
+This is effectively the same as doing the following in shell:
+    export ENVNAME=HEAD:$ENVNAME
+
+Use this to modify environment variable such as $PATH or $PYTHONPATH."
+  (setenv envname (el-get-envpath-prepend-1 (getenv envname) head)))
+
+(defun el-get-envpath-prepend-1 (paths head)
+  "Return \"HEAD:PATHS\" omitting duplicates in it."
+  (let ((pplist (split-string (or paths "") ":" 'omit-nulls)))
+    (mapconcat 'identity
+               (remove-duplicates (cons head pplist)
+                                  :test #'string= :from-end t)
+               ":")))
 
 (provide 'el-get-recipes)

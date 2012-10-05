@@ -1,11 +1,11 @@
 ;;; el-get.el --- Manage the external elisp bits and pieces you depend upon
 ;;
-;; Copyright (C) 2010-2011 Dimitri Fontaine
+;; Copyright (C) 2010-2012 Dimitri Fontaine
 ;;
 ;; Author: Dimitri Fontaine <dim@tapoueh.org>
 ;; URL: http://www.emacswiki.org/emacs/el-get
 ;; GIT: https://github.com/dimitri/el-get
-;; Version: 4.0
+;; Version: 4.1
 ;; Created: 2010-06-17
 ;; Keywords: emacs package elisp install elpa git git-svn bzr cvs svn darcs hg
 ;;           apt-get fink pacman http http-tar emacswiki
@@ -35,7 +35,7 @@
 
 ;;; Change Log:
 ;;
-;;  4.0 - WIP - To infinity, and beyond!
+;;  4.1 - 2012-08-28 - To infinity, and beyond!
 ;;
 ;;   - code refactoring
 ;;   - fix dependency tracking at install and init times
@@ -47,14 +47,18 @@
 ;;   - add support for el-get-reload and do that at update time
 ;;   - implement :checksum property for http kinds of files
 ;;   - Add new command el-get-reinstall
-;;   - implement :checkout property for git packages
+;;   - implement :checkout property for git, fossil, hg, and http methods
 ;;   - implement :shallow property for git packages
 ;;   - add support for auto-building of ELPA recipes
 ;;   - implement :submodule property for git packages (allow bypassing them)
-;;   - New package types: github, emacsmirror
+;;   - New package types: github, github-tar and zip, emacsmirror, fossil, etc
 ;;   - Support for installing CVS packages through non-transparent
 ;;     http proxy servers
 ;;   - `el-get-update-all' now prompts before updating packages
+;;   - new status file format, with a cache
+;;   - plenty new recipes
+;;   - fetch emacswiki recipes at install time by default
+;;   - new documentation, in proper info format
 ;;
 ;;  3.1 - 2011-09-15 - Get a fix
 ;;
@@ -449,14 +453,23 @@ which defaults to the first element in `el-get-recipe-path'."
 
 
 (defun el-get-init (package &optional package-status-alist)
+  "Make the named PACKAGE available for use, first initializing any
+   dependency of the PACKAGE."
+  (interactive (progn
+                 (el-get-clear-status-cache)
+                 (list (el-get-read-package-with-status "Init" "installed"))))
+  (el-get-verbose-message "el-get-init: %s" package)
+  (let* ((init-deps   (el-get-dependencies (el-get-as-symbol package))))
+    (el-get-verbose-message "el-get-init: " init-deps)
+    (loop for p in init-deps do (el-get-do-init p) collect p)))
+
+(defun el-get-do-init (package &optional package-status-alist)
   "Make the named PACKAGE available for use.
 
 Add PACKAGE's directory (or `:load-path' if specified) to the
 `load-path', add any its `:info' directory to
 `Info-directory-list', and `require' its `:features'.  Will be
 called by `el-get' (usually at startup) for each installed package."
-  (interactive (list (el-get-read-package-with-status "Init" "installed")))
-  (el-get-verbose-message "el-get-init: %s" package)
   (when el-get-auto-update-cached-recipes
     (el-get-merge-properties-into-status package package-status-alist :noerror t))
   (condition-case err
@@ -555,7 +568,9 @@ called by `el-get' (usually at startup) for each installed package."
 dependencies (if any).
 
 PACKAGE may be either a string or the corresponding symbol."
-  (interactive (list (el-get-read-package-name "Install")))
+  (interactive (progn
+                 (el-get-clear-status-cache)
+                 (list (el-get-read-package-name "Install"))))
   (setq el-get-next-packages (el-get-dependencies (el-get-as-symbol package)))
   (el-get-verbose-message "el-get-install %s: %S" package el-get-next-packages)
   (add-hook 'el-get-post-init-hooks 'el-get-install-next-packages)
@@ -577,7 +592,7 @@ PACKAGE may be either a string or the corresponding symbol."
   "Function to call after building the package while installing it."
   (el-get-save-package-status package "installed")
   (el-get-invalidate-autoloads package)	; that will also update them
-  (el-get-init package)
+  (el-get-do-init package)
   (run-hook-with-args 'el-get-post-install-hooks package))
 
 (defun el-get-post-install (package)
@@ -618,7 +633,7 @@ PACKAGE may be either a string or the corresponding symbol."
   (if (el-get-package-is-installed package)
       (progn
         (el-get-verbose-message "el-get: `%s' package is already installed" package)
-        (el-get-init package))
+        (el-get-do-init package))
     (let* ((status   (el-get-read-package-status package))
 	   (source   (el-get-package-def package))
 	   (method   (el-get-package-method source))
@@ -648,7 +663,9 @@ PACKAGE may be either a string or the corresponding symbol."
 (defun el-get-reload (package &optional package-status-alist)
   "Reload PACKAGE."
   (interactive
-   (list (el-get-read-package-with-status "Reload" "installed")))
+   (progn
+     (el-get-clear-status-cache)
+     (list (el-get-read-package-with-status "Reload" "installed"))))
   (el-get-verbose-message "el-get-reload: %s" package)
   (el-get-with-status-sources package-status-alist
     (let* ((all-features features)
@@ -698,7 +715,7 @@ PACKAGE may be either a string or the corresponding symbol."
   (when (string= (el-get-read-package-status package) "required")
     (el-get-save-package-status package "installed"))
   (el-get-invalidate-autoloads package)
-  (el-get-init package)
+  (el-get-do-init package)
   (el-get-reload package)
   (run-hook-with-args 'el-get-post-update-hooks package))
 
@@ -753,7 +770,9 @@ itself.")
 (defun el-get-update (package)
   "Update PACKAGE."
   (interactive
-   (list (el-get-read-package-with-status "Update" "required" "installed")))
+   (progn
+     (el-get-read-status-file-force)
+     (list (el-get-read-package-with-status "Update" "required" "installed"))))
   (el-get-error-unless-package-p package)
   (if (el-get-update-requires-reinstall package)
       (el-get-reinstall package)
@@ -801,7 +820,7 @@ itself.")
   (interactive)
   (when (or no-prompt
             (yes-or-no-p
-             "Do you really want to update all installed packages?"))
+             "Do you really want to update all installed packages? "))
     ;; The let and flet forms here ensure that
     ;; `package-refresh-contents' is only called once, regardless of
     ;; how many ELPA-type packages need to be installed. Without this,
@@ -839,7 +858,9 @@ itself.")
 (defun el-get-remove (package &optional package-status-alist)
   "Remove any PACKAGE that is know to be installed or required."
   (interactive
-   (list (el-get-read-package-with-status "Remove" "required" "installed")))
+   (progn
+     (el-get-clear-status-cache)
+     (list (el-get-read-package-with-status "Remove" "required" "installed"))))
   ;; If the package has a recipe saved in the status file, that will
   ;; be used. But if not, we still want to try to remove it, so we
   ;; fall back to the recipe file, and if even that doesn't provide
@@ -868,6 +889,17 @@ itself.")
   (interactive (list (el-get-read-package-name "Reinstall")))
   (el-get-remove package)
   (el-get-install package))
+
+(defun el-get-cleanup (packages) 
+  "Removes packages absent from the argument list
+'packages. Useful, for example, when we 
+want to remove all packages not explicitly declared 
+in the user-init-file (.emacs)." 
+  (let* ((packages-to-keep (el-get-dependencies (mapcar 'el-get-as-symbol packages))) 
+	 (packages-to-remove (set-difference (mapcar 'el-get-as-symbol
+						     (el-get-list-package-names-with-status
+						      "installed")) packages-to-keep))) 
+    (mapc 'el-get-remove packages-to-remove)))
 
 ;;;###autoload
 (defun el-get-cd (package)
@@ -958,7 +990,7 @@ considered \"required\"."
     (el-get-verbose-message "el-get-init-and-install: init %S" init-deps)
 
     (loop for p in install-deps do (el-get-do-install p) collect p into done)
-    (loop for p in init-deps    do (el-get-init p)       collect p into done)
+    (loop for p in init-deps    do (el-get-do-init p)    collect p into done)
     done))
 
 (defun el-get (&optional sync &rest packages)
@@ -979,23 +1011,13 @@ concurrently, in the background.
 When SYNC is 'sync, each package will be installed synchronously,
 and any error will stop it all.
 
-When SYNC is 'wait, then `el-get' will enter a wait-loop and only
-let you use Emacs once it has finished with its job. That's
-useful an option to use in your `user-init-file'. Note that each
-package in the list gets installed in parallel with this option.
-
 Please note that the `el-get-init' part of `el-get' is always
-done synchronously, so you will have to wait here. There's
-`byte-compile' support though, and the packages you use are
-welcome to use `autoload' too.
+done synchronously. There's `byte-compile' support though, and
+the packages you use are welcome to use `autoload' too.
 
 PACKAGES is expected to be a list of packages you want to install
 or init.  When PACKAGES is omited (the default), the list of
 already installed packages is considered."
-  (unless (or (null sync)
-	      (member sync '(sync wait)))
-    (error "el-get sync parameter should be either nil, sync or wait"))
-
   ;; If there's no autoload file, everything needs to be regenerated.
   (unless (file-exists-p el-get-autoload-file) (el-get-invalidate-autoloads))
 
@@ -1007,25 +1029,12 @@ already installed packages is considered."
 	  (loop for p in packages when (listp p) append p else collect p))
          (total       (length packages))
          (installed   (el-get-count-packages-with-status packages "installed"))
-         (progress (and (eq sync 'wait)
-                        (make-progress-reporter
-			 "Waiting for `el-get' to complete... "
-			 0 (- total installed) 0)))
          (el-get-default-process-sync sync))
 
     ;; keep the result of `el-get-init-and-install' to return it even in the
     ;; 'wait case
     (prog1
 	(el-get-init-and-install (mapcar 'el-get-as-symbol packages))
-
-      ;; el-get-install is async, that's now ongoing.
-      (when progress
-        (while (> (- total installed) 0)
-          (sleep-for 0.2)
-          ;; don't forget to account for installation failure
-          (setq installed (el-get-count-packages-with-status packages "installed" "required"))
-          (progress-reporter-update progress (- total installed)))
-        (progress-reporter-done progress))
 
       ;; now is a good time to care about autoloads
       (el-get-eval-autoloads))
